@@ -1,4 +1,4 @@
-## 🚀 RHEL 10 + Podman 5.x + NVIDIA GPU AIサーバー構築ガイド
+## RHEL 10 + Podman 5.x + NVIDIA GPU AIサーバー構築ガイド
 
 このガイドは、**RTX 2000 Ada** 等の最新GPUを、RHEL 10 上の Podman コンテナから 100% 活用するための最短ルートをまとめたものです。
 
