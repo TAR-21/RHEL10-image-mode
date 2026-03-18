@@ -78,11 +78,3 @@ nvidia-smi
 # Look for "/usr/bin/ollama" in the Processes list and check GPU-Util %
 
 ```
-
----
-
-### 💡 Quick Troubleshooting Tips
-
-* **Command Not Found (`nvidia-smi`)**: Ensure `nvidia-driver-cuda` is installed. If it is, run `find / -name nvidia-smi` to locate the binary and symlink it to `/usr/bin/`.
-* **Shared Libraries**: If Ollama defaults to CPU, verify that `/usr/lib64/libcuda.so.1` exists on the host.
-* **After Driver Updates**: Always re-run `sudo nvidia-ctk cdi generate` if you update the NVIDIA drivers on the host to keep the container mapping current.
