@@ -1,1 +1,0 @@
-# RHEL10-image-mode
