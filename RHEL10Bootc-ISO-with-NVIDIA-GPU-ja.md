@@ -1,19 +1,21 @@
-# RHEL 10 Bootc NVIDIA GPU 搭載カスタム ISO 作成手順書
+# RHEL 10 Bootc NVIDIA GPU 搭載カスタム ISO 作成ガイド
 
-本ドキュメントは、NVIDIA GPU (CUDA 13.1 / Driver 590+) をサポートした RHEL 10 Bootc イメージをビルドし、エッジデバイス用のインストール ISO を作成する手順をまとめたものです。
+この手順書は、**RHEL 10 Bootc** をベースに NVIDIA GPU ドライバ（CUDA 13.1 / Driver 590+）を組み込み、エッジデバイスへのインストールが可能な ISO イメージを作成する一連の流れを解説します。
 
-## 1. 事前準備
+## 1. 事前準備とリポジトリの取得
 
-### リポジトリのクローンと移動
-作業用ディレクトリに必要なソースコード一式を取得します。
+まず、必要なソースコードをク隆し、作業ディレクトリへ移動します。
 
 ```bash
+# リポジトリのクローン
 git clone https://github.com/redhat-et/mlops-at-the-edge.git
+
+# プロジェクトディレクトリへ移動
 cd mlops-at-the-edge/scenarios/scenario-01-device-edge/bootc-image
 ```
 
 ### レジストリへのログイン
-イメージをプッシュするためのレジストリ（Quay.io や Docker Hub 等）および Red Hat 認定レジストリへログインします。
+Red Hat 公式レジストリおよび、ビルドしたイメージを保存するレジストリ（Quay.io 等）にログインします。
 
 ```bash
 sudo podman login registry.redhat.io
@@ -22,51 +24,164 @@ sudo podman login quay.io
 
 ---
 
-## 2. Bootc コンテナイメージのビルド
+## 2. Containerfile の作成と確認
 
-`Containerfile.bootc` を使用して、OS のルートファイルシステムとなるコンテナイメージを構築します。
+`scenarios/scenario-01-device-edge/bootc-image/containerfiles/Containerfile.bootc` として以下の内容を用意します。
 
-### 環境変数の設定
-`REGISTRY_USER` には、ご自身のレジストリユーザー名を指定してください。
+> **注意:** このファイルには RHEL 10 用のビルドツールを補完するために CentOS Stream 10 のリポジトリを参照する高度な設定が含まれています。
+
+```dockerfile
+# Containerfile for RHEL 10 Bootc OS Image with NVIDIA GPU Support
+# Includes: Podman + podman-compose, NVIDIA drivers 590+ with CUDA 13.1, and SSH access
+
+FROM registry.redhat.io/rhel10/rhel-bootc:10.0
+
+# =============================================================================
+# SECTION 1: システム管理 & SSH 設定
+# =============================================================================
+
+# 管理ユーザー 'admin' の作成、sudo 権限付与、SSH サービスの有効化
+RUN useradd -m -G wheel admin && \
+    echo "admin:admin123" | chpasswd && \
+    systemctl enable sshd
+
+# =============================================================================
+# SECTION 2: NVIDIA GPU 設定 (ビルド時のドライバインストール)
+# =============================================================================
+
+# RHEL 10 用の EPEL リポジトリをインストール
+RUN dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm && \
+    dnf -y clean all
+
+# CentOS Stream 10 からビルドツールをインストール（RHEL 10 リポジトリ補完用）
+RUN dnf swap -y \
+    --repofrompath=centos10-baseos,https://mirror.stream.centos.org/10-stream/BaseOS/x86_64/os/ \
+    --repofrompath=centos10-appstream,https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ \
+    --setopt=centos10-baseos.gpgcheck=0 \
+    --setopt=centos10-appstream.gpgcheck=0 \
+    openssl-fips-provider-so openssl-libs && \
+    dnf install -y \
+    --repofrompath=centos10-baseos,https://mirror.stream.centos.org/10-stream/BaseOS/x86_64/os/ \
+    --repofrompath=centos10-appstream,https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ \
+    --setopt=centos10-baseos.gpgcheck=0 \
+    --setopt=centos10-appstream.gpgcheck=0 \
+    gcc \
+    make \
+    dkms && \
+    dnf -y clean all
+
+# X11/OpenGL/Vulkan 依存関係のインストール
+RUN dnf install -y \
+    --repofrompath=centos10-baseos,https://mirror.stream.centos.org/10-stream/BaseOS/x86_64/os/ \
+    --repofrompath=centos10-appstream,https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ \
+    --setopt=centos10-baseos.gpgcheck=0 \
+    --setopt=centos10-appstream.gpgcheck=0 \
+    libX11 libXext libglvnd libglvnd-egl libglvnd-gles libglvnd-glx libglvnd-opengl \
+    libvdpau vulkan-loader ocl-icd opencl-filesystem && \
+    dnf -y clean all
+
+# NVIDIA CUDA リポジトリの追加
+RUN dnf config-manager --add-repo \
+    https://developer.download.nvidia.com/compute/cuda/repos/rhel10/x86_64/cuda-rhel10.repo
+
+# OS イメージのカーネルバージョンに合致する kernel-devel をインストール
+RUN KERNEL_VERSION=$(rpm -q kernel --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}') && \
+    dnf install -y \
+    --repofrompath=centos10-baseos,https://mirror.stream.centos.org/10-stream/BaseOS/x86_64/os/ \
+    --repofrompath=centos10-appstream,https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ \
+    --setopt=centos10-baseos.gpgcheck=0 \
+    --setopt=centos10-appstream.gpgcheck=0 \
+    "kernel-devel-${KERNEL_VERSION}" \
+    "kernel-headers-${KERNEL_VERSION}" && \
+    dnf -y clean all
+
+# NVIDIA ドライバと Container Toolkit のインストール (590系に固定)
+RUN dnf install -y \
+    "kmod-nvidia-latest-dkms-590*" \
+    "nvidia-driver-590*" \
+    "nvidia-driver-cuda-590*" \
+    nvidia-container-toolkit \
+    --setopt=install_weak_deps=False \
+    --allowerasing && \
+    dnf -y clean all
+
+# ビルド時に NVIDIA カーネルモジュールをコンパイル (DKMS)
+RUN KERNEL_VERSION=$(rpm -q kernel --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}') && \
+    mkdir -p /var/lib/dkms && \
+    dkms autoinstall -k ${KERNEL_VERSION}
+
+RUN systemctl mask dkms.service
+
+# Nouveau ドライバの無効化設定
+RUN echo "blacklist nouveau" > /etc/modprobe.d/blacklist-nouveau.conf && \
+    echo "options nouveau modeset=0" >> /etc/modprobe.d/blacklist-nouveau.conf
+
+# モジュールの自動ロードと永続化設定
+RUN echo -e "nvidia\nnvidia-uvm\nnvidia-modeset" > /etc/modules-load.d/nvidia.conf
+RUN systemctl enable nvidia-persistenced.service
+
+# NVIDIA UVM および CDI 初期化サービスの追加
+COPY containerfiles/configs/nvidia-uvm-init.service /etc/systemd/system/nvidia-uvm-init.service
+COPY containerfiles/configs/nvidia-cdi-generate.service /etc/systemd/system/nvidia-cdi-generate.service
+RUN systemctl enable nvidia-uvm-init.service nvidia-cdi-generate.service
+
+# =============================================================================
+# SECTION 3: コンテナランタイム (Podman)
+# =============================================================================
+
+RUN dnf install -y podman podman-compose && \
+    dnf -y clean all && \
+    systemctl enable podman.service
+
+COPY containerfiles/configs/containers.conf /etc/containers/containers.conf
+RUN setsebool -P container_use_devices 1
+RUN mkdir -p /etc/cdi /var/lib/containers
+
+# =============================================================================
+# メタデータラベル
+# =============================================================================
+
+LABEL org.opencontainers.image.title="MLOps Bootc RHEL 10 - GPU & SSH"
+LABEL hardware.gpu.vendor="nvidia"
+LABEL os.version="10"
+```
+
+---
+
+## 3. コンテナイメージのビルドとプッシュ
+
+環境変数を設定し、Podman でイメージをビルドしてレジストリへプッシュします。
 
 ```bash
+# 環境変数の設定（レジストリユーザー名は適宜書き換えてください）
 export VERSION=v1.0.0
 export REGISTRY_USER="<YOUR_REGISTRY_USER>"
 export OCI_IMAGE_REPO="quay.io/${REGISTRY_USER}/mlops-bootc-rhel10-nvidia"
-```
 
-### ビルドの実行
-このプロセスでは、RHEL 10 上で NVIDIA ドライバを DKMS (Dynamic Kernel Module Support) によりビルドします。
-
-```bash
+# ビルドの実行（amd64 アーキテクチャ指定）
 sudo podman build --platform=linux/amd64 \
   -f containerfiles/Containerfile.bootc \
   -t ${OCI_IMAGE_REPO}:${VERSION} .
-```
 
-### レジストリへのプッシュ
-ビルドしたイメージをリモートレジストリに保存します。これは、後の ISO 生成プロセスで `bootc-image-builder` がイメージを参照するために必要です。
-
-```bash
+# イメージのプッシュ
 sudo podman push ${OCI_IMAGE_REPO}:${VERSION}
 ```
 
 ---
 
-## 3. インストール用 ISO イメージの生成
+## 4. インストール用 ISO イメージの生成
 
-`bootc-image-builder` を使用して、コンテナイメージを物理マシンにインストール可能な ISO 形式へ変換します。
+`bootc-image-builder` を使用して、プッシュしたコンテナイメージをブート可能な ISO 形式に変換します。
 
-### 出力ディレクトリの準備
 ```bash
+# 出力ディレクトリの作成
 mkdir -p ~/bootc-build/output
 cd ~/bootc-build
-```
 
-### ISO 生成コマンドの実行
-`--privileged` 権限と適切なセキュリティラベルを付与して実行します。
+# 最新イメージの取得（確認用）
+sudo podman pull ${OCI_IMAGE_REPO}:${VERSION}
 
-```bash
+# ISO 生成の実行
 sudo podman run --rm -it --privileged --pull=newer \
   --security-opt label=type:unconfined_t \
   -v "$(pwd)/output":/output \
@@ -78,20 +193,12 @@ sudo podman run --rm -it --privileged --pull=newer \
 
 ---
 
-## 4. 成果物の確認とデプロイ
+## 5. 成果物の確認
 
-処理が完了すると、以下のパスに ISO ファイルが生成されます。
+ビルドが完了すると、以下の場所に ISO イメージが生成されます。
 
-* **生成ファイル:** `~/bootc-build/output/iso/install.iso`
+* **成果物:** `~/bootc-build/output/iso/install.iso`
 
-### イメージに含まれる主要な設定
-* **デフォルトユーザー:** `admin` (パスワード: `admin123`)
-* **GPU サポート:** NVIDIA Driver 590+ / CUDA 13.1
-* **コンテナ環境:** Podman & podman-compose 導入済み
-* **自動設定:** 起動時に NVIDIA UVM および CDI (Container Device Interface) を自動生成する systemd ユニットを構成済み
-
----
-
-## 補足：トラブルシューティング
-ビルドした ISO で起動後、GPU が正しく認識されているかは以下のコマンドで確認できます。
-* `nvidia-smi` : ドライバと GPU のステータス確認
+### システム構成の要約
+* **ログイン:** ユーザー名 `admin` / パスワード `admin123`
+* **GPU:** NVIDIA Driver 590+ / CUDA 13.1 導入済み
