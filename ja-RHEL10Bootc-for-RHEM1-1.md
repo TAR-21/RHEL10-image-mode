@@ -123,7 +123,7 @@ sudo podman run --rm -it --privileged \
 
 ```
 
-## 5. 運用上の重要注意点：Greenboot による自動ロールバック
+## 5. コンテナファイル作成時の重要注意点：Greenboot による自動ロールバック
 
 本イメージには `Greenboot` が統合されており、システムの安定性を担保します。
 
